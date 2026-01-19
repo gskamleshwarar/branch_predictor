@@ -1,0 +1,254 @@
+int main(int argc, char *argv[])
+{
+    FILE *FP;               // File handler
+    char *trace_file;       // Variable that holds trace file name;
+    bp_params params;       // Define struct bp_params accordingly
+    char outcome;           // Variable holds branch outcome
+    unsigned long int addr; // Variable holds the address read from input file
+
+    // Variables for prediction statistics
+    unsigned long int total_predictions = 0;
+    unsigned long int mispredictions = 0;
+    double misprediction_rate = 0.0;
+
+    // Predictor table for bimodal
+    unsigned char *bimodal_table = NULL;
+    unsigned long int table_size = 0;
+
+    // Predictor table and global history register for gshare
+    unsigned char *gshare_table = NULL;
+    unsigned int global_history = 0;
+
+
+    if (!(argc == 4 || argc == 5 || argc == 7))
+    {
+        printf("Error: Wrong number of inputs: %d\n", argc - 1);
+        exit(EXIT_FAILURE);
+    }
+
+    params.bp_name = argv[1];
+
+    if (strcmp(params.bp_name, "bimodal") == 0) // Bimodal
+    {
+        if (argc != 4)
+        {
+            printf("Error: %s wrong number of inputs: %d\n", params.bp_name, argc - 1);
+            exit(EXIT_FAILURE);
+        }
+        params.M2 = strtoul(argv[2], NULL, 10);
+        trace_file = argv[3];
+        printf("COMMAND\n%s %s %lu %s\n", argv[0], params.bp_name, params.M2, trace_file);
+
+        // Allocate and initialize bimodal predictor table
+        table_size = 1 << params.M2; // 2^M2 entries
+        bimodal_table = (unsigned char *)malloc(table_size * sizeof(unsigned char));
+        if (bimodal_table == NULL)
+        {
+            printf("Error: Unable to allocate memory for bimodal table\n");
+            exit(EXIT_FAILURE);
+        }
+        // Initialize entries to 2 (weakly taken)
+        for (unsigned long int i = 0; i < table_size; i++)
+        {
+            bimodal_table[i] = 2;
+        }
+    }
+    else if (strcmp(params.bp_name, "gshare") == 0) // Gshare
+    {
+        if (argc != 5)
+        {
+            printf("Error: %s wrong number of inputs: %d\n", params.bp_name, argc - 1);
+            exit(EXIT_FAILURE);
+        }
+        params.M1 = strtoul(argv[2], NULL, 10); // Number of PC bits used
+        params.N = strtoul(argv[3], NULL, 10);  // Number of global history bits
+        trace_file = argv[4];
+        printf("COMMAND\n%s %s %lu %lu %s\n", argv[0], params.bp_name, params.M1, params.N, trace_file);
+
+        // Initialize gshare predictor table
+        table_size = 1 << params.M1; // 2^M1 entries
+        gshare_table = (unsigned char *)malloc(table_size * sizeof(unsigned char));
+        if (gshare_table == NULL)
+        {
+            printf("Error: Unable to allocate memory for gshare table\n");
+            exit(EXIT_FAILURE);
+        }
+        // Initialize entries to 2 (weakly taken)
+        for (unsigned long int i = 0; i < table_size; i++)
+        {
+            gshare_table[i] = 2;
+        }
+        // Initialize global history register to 0
+        global_history = 0;
+    }
+    else if (strcmp(params.bp_name, "hybrid") == 0) // Hybrid
+    {
+        // Handle hybrid predictor initialization
+    }
+    else
+    {
+        printf("Error: Wrong branch predictor name: %s\n", params.bp_name);
+        exit(EXIT_FAILURE);
+    }
+
+    // Open trace_file in read mode
+    FP = fopen(trace_file, "r");
+    if (FP == NULL)
+    {
+        printf("Error: Unable to open file %s\n", trace_file);
+        exit(EXIT_FAILURE);
+    }
+
+    char str[2];
+    while (fscanf(FP, "%lx %1s", &addr, str) != EOF)
+    {
+        outcome = str[0];
+        // printf("%lx %s\n", addr, str); // Uncomment to print the trace
+
+        /*************************************
+            Add branch predictor code here
+        **************************************/
+        if (strcmp(params.bp_name, "bimodal") == 0)
+        {
+            total_predictions++;
+
+            // Compute index into the predictor table
+            unsigned long int index = (addr >> 2) & ((1 << params.M2) - 1);
+
+            // Get the counter value
+            unsigned char counter = bimodal_table[index];
+
+            // Make a prediction
+            char prediction = (counter >= 2) ? 't' : 'n';
+
+            // Compare with actual outcome
+            if (prediction != outcome)
+            {
+                mispredictions++;
+            }
+
+            // Update the counter
+            if (outcome == 't')
+            {
+                if (counter < 3)
+                {
+                    counter++;
+                }
+            }
+            else if (outcome == 'n')
+            {
+                if (counter > 0)
+                {
+                    counter--;
+                }
+            }
+            else
+            {
+                printf("Error: Invalid outcome '%c' in trace file\n", outcome);
+                exit(EXIT_FAILURE);
+            }
+
+            // Store the updated counter back
+            bimodal_table[index] = counter;
+        }
+        else if (strcmp(params.bp_name, "gshare") == 0)
+        {
+            total_predictions++;
+
+            // Compute the index into the predictor table using gshare logic
+            unsigned long int pc_index = (addr >> 2) & ((1 << params.M1) - 1);
+            unsigned int history_mask = (1 << params.N) - 1;
+
+            // XOR the lower M1 bits of the PC with the global history
+            unsigned long int index = (pc_index ^ (global_history & history_mask)) & ((1 << params.M1) - 1);
+
+            // Get the counter value from the gshare table
+            unsigned char counter = gshare_table[index];
+
+            // Make a prediction
+            char prediction = (counter >= 2) ? 't' : 'n';
+
+            // Compare with actual outcome
+            if (prediction != outcome)
+            {
+                mispredictions++;
+            }
+
+            // Update the counter
+            if (outcome == 't')
+            {
+                if (counter < 3)
+                {
+                    counter++;
+                }
+            }
+            else if (outcome == 'n')
+            {
+                if (counter > 0)
+                {
+                    counter--;
+                }
+            }
+            else
+            {
+                printf("Error: Invalid outcome '%c' in trace file\n", outcome);
+                exit(EXIT_FAILURE);
+            }
+
+            // Store the updated counter back
+            gshare_table[index] = counter;
+
+            // Update the global history register
+            global_history = ((global_history << 1) | (outcome == 't' ? 1 : 0)) & history_mask;
+        }
+        else if (strcmp(params.bp_name, "hybrid") == 0)
+        {
+            // Implement hybrid predictor logic here
+        }
+    }
+
+    fclose(FP);
+
+    // Calculate misprediction rate
+    misprediction_rate = ((double)mispredictions / total_predictions) * 100.0;
+
+    // Print the output in the desired format
+    printf("OUTPUT\n");
+    printf("number of predictions:    %lu\n", total_predictions);
+    printf("number of mispredictions: %lu\n", mispredictions);
+    printf("misprediction rate:       %.2f%%\n", misprediction_rate);
+
+    // Print the final contents of the bimodal predictor table
+    if (strcmp(params.bp_name, "bimodal") == 0)
+    {
+        printf("FINAL BIMODAL CONTENTS\n");
+        for (unsigned long int i = 0; i < table_size; i++)
+        {
+            printf("%lu\t%u\n", i, bimodal_table[i]);
+        }
+    }
+
+    // Free allocated memory
+    if (bimodal_table != NULL)
+    {
+        free(bimodal_table);
+    }
+
+    // Print the final contents of the gshare predictor table
+    if (strcmp(params.bp_name, "gshare") == 0)
+    {
+        printf("FINAL GSHARE CONTENTS\n");
+        for (unsigned long int i = 0; i < table_size; i++)
+        {
+            printf("%lu\t%u\n", i, gshare_table[i]);
+        }
+    }
+
+    // Free allocated memory
+    if (gshare_table != NULL)
+    {
+        free(gshare_table);
+    }
+
+    return 0;
+}
